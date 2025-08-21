@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import axios from 'axios';
-import { Heart, ThumbsUp, Share, Smile, MessageCircle, Calendar, MapPin, Clock, User, Package, Building } from 'lucide-react';
+import { MessageCircle, Calendar, MapPin, Clock, User, Package, Building } from 'lucide-react';
+import Reactions from './Reactions';
 
 const PostCard = ({ post, onUpdate, onDelete }) => {
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState([]);
   const [newComment, setNewComment] = useState('');
   const [loadingComments, setLoadingComments] = useState(false);
+  const [userReaction, setUserReaction] = useState(null);
 
   const getTypeColor = (type) => {
     switch (type) {
@@ -28,12 +30,14 @@ const PostCard = ({ post, onUpdate, onDelete }) => {
 
   const handleReaction = async (reaction) => {
     try {
+      const userId = 'user-' + Math.random().toString(36).substr(2, 9);
       const response = await axios.post(`/api/posts/${post.id}/react`, {
         reaction,
-        userId: 'user-' + Math.random().toString(36).substr(2, 9)
+        userId
       });
       
       if (response.data.success) {
+        setUserReaction(userReaction === reaction ? null : reaction);
         onUpdate({
           ...post,
           reactions: response.data.reactions
@@ -82,6 +86,35 @@ const PostCard = ({ post, onUpdate, onDelete }) => {
     }
   };
 
+  const handleCommentReaction = async (commentId, reaction) => {
+    try {
+      const userId = 'user-' + Math.random().toString(36).substr(2, 9);
+      const response = await axios.post(`/api/comments/${commentId}/react`, {
+        reaction,
+        userId,
+        postId: post.id
+      });
+
+      if (response.data.success) {
+        // Update the comment reactions in the local state
+        setComments(comments.map(comment => {
+          if (comment.id === commentId) {
+            return { ...comment, reactions: response.data.reactions };
+          }
+          // Check replies too
+          const updatedReplies = comment.replies.map(reply => 
+            reply.id === commentId 
+              ? { ...reply, reactions: response.data.reactions }
+              : reply
+          );
+          return { ...comment, replies: updatedReplies };
+        }));
+      }
+    } catch (error) {
+      console.error('Error adding comment reaction:', error);
+    }
+  };
+
   const formatTime = (timestamp) => {
     const date = new Date(timestamp);
     const now = new Date();
@@ -114,6 +147,14 @@ const PostCard = ({ post, onUpdate, onDelete }) => {
           {post.data.title || 'Post'}
         </h3>
         <p className="text-gray-700 mb-4">{post.data.description}</p>
+
+        {post.type === 'MEME' && post.data.imageUrl && (
+          <img
+            src={post.data.imageUrl}
+            alt="Meme"
+            className="w-full rounded-lg border mb-4"
+          />
+        )}
 
         {/* Type-specific content */}
         {post.type === 'EVENT' && (
@@ -175,36 +216,12 @@ const PostCard = ({ post, onUpdate, onDelete }) => {
       {/* Reactions */}
       <div className="px-6 py-3 border-t border-gray-100">
         <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-6">
-            <button
-              onClick={() => handleReaction('like')}
-              className="flex items-center space-x-2 text-gray-600 hover:text-blue-600 transition-colors"
-            >
-              <ThumbsUp className="w-4 h-4" />
-              <span className="text-sm">{post.reactions.like}</span>
-            </button>
-            <button
-              onClick={() => handleReaction('love')}
-              className="flex items-center space-x-2 text-gray-600 hover:text-red-600 transition-colors"
-            >
-              <Heart className="w-4 h-4" />
-              <span className="text-sm">{post.reactions.love}</span>
-            </button>
-            <button
-              onClick={() => handleReaction('share')}
-              className="flex items-center space-x-2 text-gray-600 hover:text-green-600 transition-colors"
-            >
-              <Share className="w-4 h-4" />
-              <span className="text-sm">{post.reactions.share}</span>
-            </button>
-            <button
-              onClick={() => handleReaction('laugh')}
-              className="flex items-center space-x-2 text-gray-600 hover:text-yellow-600 transition-colors"
-            >
-              <Smile className="w-4 h-4" />
-              <span className="text-sm">{post.reactions.laugh}</span>
-            </button>
-          </div>
+          <Reactions
+            reactions={post.reactions}
+            userReaction={userReaction}
+            onReact={handleReaction}
+            size="small"
+          />
           <button
             onClick={loadComments}
             className="flex items-center space-x-2 text-gray-600 hover:text-blue-600 transition-colors"
@@ -231,7 +248,20 @@ const PostCard = ({ post, onUpdate, onDelete }) => {
                       <span className="font-medium text-sm text-gray-900">{comment.author}</span>
                       <span className="text-xs text-gray-500">{formatTime(comment.timestamp)}</span>
                     </div>
-                    <p className="text-sm text-gray-700">{comment.text}</p>
+                    <p className="text-sm text-gray-700 mb-2">{comment.text}</p>
+                    {comment.type === 'MEME' && comment.imageUrl && (
+                      <img
+                        src={comment.imageUrl}
+                        alt="Meme"
+                        className="w-full rounded-lg border mb-2"
+                      />
+                    )}
+                    <Reactions
+                      reactions={comment.reactions}
+                      userReaction={null}
+                      onReact={(reaction) => handleCommentReaction(comment.id, reaction)}
+                      size="small"
+                    />
                   </div>
                   {comment.replies && comment.replies.map((reply) => (
                     <div key={reply.id} className="ml-6 mt-2">
@@ -240,7 +270,20 @@ const PostCard = ({ post, onUpdate, onDelete }) => {
                           <span className="font-medium text-sm text-gray-900">{reply.author}</span>
                           <span className="text-xs text-gray-500">{formatTime(reply.timestamp)}</span>
                         </div>
-                        <p className="text-sm text-gray-700">{reply.text}</p>
+                        <p className="text-sm text-gray-700 mb-2">{reply.text}</p>
+                        {reply.type === 'MEME' && reply.imageUrl && (
+                          <img
+                            src={reply.imageUrl}
+                            alt="Meme"
+                            className="w-full rounded-lg border mb-2"
+                          />
+                        )}
+                        <Reactions
+                          reactions={reply.reactions}
+                          userReaction={null}
+                          onReact={(reaction) => handleCommentReaction(reply.id, reaction)}
+                          size="small"
+                        />
                       </div>
                     </div>
                   ))}

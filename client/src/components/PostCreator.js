@@ -203,6 +203,14 @@ const PostCreator = ({ onPostCreated }) => {
             </h3>
             <p className="text-gray-700 mb-3">{classification.description}</p>
 
+            {classification.type === 'MEME' && classification.imageUrl && (
+              <img
+                src={classification.imageUrl}
+                alt="Generated meme"
+                className="w-full rounded-lg border mb-3"
+              />
+            )}
+
             {classification.type === 'EVENT' && (
               <div className="grid grid-cols-2 gap-4 text-sm">
                 {classification.location && (

@@ -26,7 +26,7 @@ let comments = {};
 async function classifyPost(text) {
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4.1-nano",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
@@ -82,7 +82,7 @@ Respond in JSON format only with the classification and extracted fields.`
 async function checkToxicity(text) {
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4.1-nano",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
@@ -137,8 +137,18 @@ app.post('/api/classify', async (req, res) => {
       classification
     });
   } catch (error) {
-    console.error('Classification error:', error);
-    res.status(500).json({ success: false, error: 'Classification failed' });
+    console.warn('Classification error, returning safe default:', error?.message || error);
+    // Never block the user: return a safe default classification
+    res.json({
+      success: true,
+      isToxic: false,
+      classification: {
+        type: 'ANNOUNCEMENT',
+        title: 'General Post',
+        description: (req.body && req.body.text) ? req.body.text : 'General update',
+        department: 'General'
+      }
+    });
   }
 });
 
@@ -153,7 +163,7 @@ app.post('/api/posts', (req, res) => {
       data,
       originalText,
       timestamp: new Date().toISOString(),
-      reactions: { like: 0, love: 0, share: 0, laugh: 0 },
+      reactions: { thumbsUp: 0, heart: 0, laugh: 0, surprise: 0, tear: 0, anger: 0 },
       userReactions: {}
     };
     
@@ -257,9 +267,14 @@ app.post('/api/posts/:id/comments', async (req, res) => {
   try {
     const { id } = req.params;
     const { text, parentId = null, author = 'Anonymous' } = req.body;
-    
-    // Check toxicity
-    const toxicityCheck = await checkToxicity(text);
+
+    // Support meme command in comments: /meme <prompt>
+    const isMeme = typeof text === 'string' && text.startsWith('/meme ');
+    const memePrompt = isMeme ? text.substring(6).trim() : null;
+
+    // Run toxicity check on the effective text (prompt if meme, otherwise full text)
+    const textForModeration = isMeme ? memePrompt : text;
+    const toxicityCheck = await checkToxicity(textForModeration || '');
     if (toxicityCheck.isToxic) {
       return res.json({
         success: false,
@@ -268,20 +283,43 @@ app.post('/api/posts/:id/comments', async (req, res) => {
         suggestedRewrite: toxicityCheck.suggestedRewrite
       });
     }
-    
+
+    let imageUrl = null;
+    let finalText = text;
+    let type = undefined;
+
+    if (isMeme && memePrompt) {
+      // Generate meme image
+      const response = await openai.images.generate({
+        model: "gpt-image-1",
+        prompt: `Create a funny meme image: ${memePrompt}`,
+        size: "1024x1024",
+        quality: "standard",
+        n: 1,
+        response_format: "url",
+      });
+      imageUrl = response.data[0].url;
+      finalText = memePrompt;
+      type = 'MEME';
+    }
+
     const comment = {
       id: uuidv4(),
-      text,
+      text: finalText,
       author,
       timestamp: new Date().toISOString(),
       parentId,
-      replies: []
+      replies: [],
+      reactions: { thumbsUp: 0, heart: 0, laugh: 0, surprise: 0, tear: 0, anger: 0 },
+      userReactions: {},
+      ...(type ? { type } : {}),
+      ...(imageUrl ? { imageUrl } : {})
     };
-    
+
     if (!comments[id]) {
       comments[id] = [];
     }
-    
+
     if (parentId) {
       // Add as reply
       const parentComment = comments[id].find(c => c.id === parentId);
@@ -292,11 +330,63 @@ app.post('/api/posts/:id/comments', async (req, res) => {
       // Add as top-level comment
       comments[id].push(comment);
     }
-    
+
     res.json({ success: true, comment });
   } catch (error) {
     console.error('Comment error:', error);
     res.status(500).json({ success: false, error: 'Failed to add comment' });
+  }
+});
+
+// Add reaction to comment
+app.post('/api/comments/:id/react', (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reaction, userId = 'anonymous', postId } = req.body;
+    
+    // Find comment in the post's comments
+    const postComments = comments[postId] || [];
+    let comment = null;
+    
+    // Search in top-level comments and replies
+    for (const topComment of postComments) {
+      if (topComment.id === id) {
+        comment = topComment;
+        break;
+      }
+      for (const reply of topComment.replies) {
+        if (reply.id === id) {
+          comment = reply;
+          break;
+        }
+      }
+      if (comment) break;
+    }
+    
+    if (!comment) {
+      return res.status(404).json({ success: false, error: 'Comment not found' });
+    }
+    
+    // Toggle reaction
+    const userPrevReaction = comment.userReactions[userId];
+    if (userPrevReaction === reaction) {
+      // Remove reaction
+      comment.reactions[reaction]--;
+      delete comment.userReactions[userId];
+    } else {
+      // Remove previous reaction if exists
+      if (userPrevReaction) {
+        comment.reactions[userPrevReaction]--;
+      }
+      // Add new reaction
+      comment.reactions[reaction]++;
+      comment.userReactions[userId] = reaction;
+    }
+    
+    res.json({ success: true, reactions: comment.reactions });
+  } catch (error) {
+    console.error('Comment reaction error:', error);
+    res.status(500).json({ success: false, error: 'Failed to add reaction' });
   }
 });
 
@@ -311,6 +401,7 @@ app.post('/api/generate-meme', async (req, res) => {
       size: "1024x1024",
       quality: "standard",
       n: 1,
+      response_format: "url",
     });
     
     res.json({ success: true, imageUrl: response.data[0].url });
